@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>لعبة صيد الفواكه</title>
+  <style>
+    /* تصميم بسيط ومرن */
+    :root{--bg:#0b1220;--panel:#0f1a2b;--accent:#ffb86b;--text:#e6eef8}
+    *{box-sizing:border-box;font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif}
+    html,body{height:100%;margin:0;background:linear-gradient(180deg,var(--bg),#07101a);color:var(--text)}
+    .wrap{max-width:900px;margin:24px auto;padding:16px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    h1{font-size:20px;margin:0}
+    .panel{background:rgba(255,255,255,0.03);padding:12px;border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,0.5)}
+    #gameCanvas{display:block;width:100%;height:520px;background:linear-gradient(180deg,#123,#034);border-radius:8px}
+    .controls{display:flex;gap:8px;align-items:center}
+    button{background:var(--accent);border:none;padding:8px 12px;border-radius:8px;cursor:pointer}
+    button:active{transform:translateY(1px)}
+    .info{display:flex;gap:12px;align-items:center}
+    .muted{opacity:0.8;font-size:13px}
+    footer{margin-top:14px;text-align:center;color:var(--text);opacity:0.9}
+    @media (max-width:520px){#gameCanvas{height:380px}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>لعبة صيد الفواكه — امسكها قبل أن تقع!</h1>
+      <div class="controls">
+        <button id="startBtn">ابدأ</button>
+        <button id="pauseBtn">إيقاف مؤقت</button>
+        <div class="info panel" style="padding:6px 10px;border-radius:8px">
+          <span id="score">النتيجة: 0</span> · <span id="lives">حياة: 3</span>
+        </div>
+      </div>
+    </header>
+
+    <main style="margin-top:12px">
+      <canvas id="gameCanvas" width="900" height="520" class="panel"></canvas>
+      <p class="muted">تحكم: استخدم الفأرة، أو مفاتيح السهم (يمين/يسار). اضغط المسافة للقفز السريع. كلما زادت النتيجة ترتفع السرعة.</p>
+    </main>
+
+    <footer class="muted">صنع بواسطة ChatGPT — قل لي لو عايز تعديلات أو إضافة أصوات وصور</footer>
+  </div>
+
+  <script>
+    // لعبة بسيطة: امسك الفواكه المتساقطة بسلة
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const startBtn = document.getElementById('startBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const scoreEl = document.getElementById('score');
+    const livesEl = document.getElementById('lives');
+
+    let W = canvas.width, H = canvas.height;
+    function resizeCanvas(){
+      // يحافظ على الدقة الداخلية لكن يسمح بالتمدد عرضياً
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.max(400, Math.floor(rect.width));
+      canvas.height = Math.max(300, Math.floor(rect.height));
+      W = canvas.width; H = canvas.height;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // حالة اللعبة
+    const game = {
+      running:false,
+      paused:false,
+      score:0,
+      lives:3,
+      level:1,
+      speedMultiplier:1,
+      spawnTimer:0,
+      spawnInterval:900, // مللي ثانية
+      lastTime:0
+    };
+
+    // اللاعب — السلة
+    const player = {
+      w:120, h:24,
+      x:W/2 - 60,
+      y: H - 50,
+      vx:0,
+      speed:8,
+      color:'#ffd07a'
+    };
+
+    // العناصر المتساقطة
+    const items = [];
+
+    // أنواع الفواكه (للشكل والنتيجة)
+    const fruitTypes = [
+      {name:'تفاحة', points:10, radius:16, color:'#ff4d4d'},
+      {name:'موز', points:15, radius:18, color:'#ffe066'},
+      {name:'عنب', points:20, radius:14, color:'#a05cd5'},
+      {name:'أناناس', points:30, radius:20, color:'#ffb84d'}
+    ];
+
+    // إدخال فأرة ومفاتيح
+    let mouseX = null;
+    canvas.addEventListener('mousemove', (e)=>{
+      const r = canvas.getBoundingClientRect();
+      mouseX = e.clientX - r.left;
+    });
+    canvas.addEventListener('mouseleave', ()=> mouseX = null);
+
+    const keys = {};
+    window.addEventListener('keydown', (e)=>{ keys[e.code]=true; if(e.code==='Space'){ // دفعة سريعة
+      player.y -= 40; if(player.y < 50) player.y = 50; e.preventDefault(); } });
+    window.addEventListener('keyup', (e)=>{ keys[e.code]=false; });
+
+    // بدء/إيقاف مؤقت
+    startBtn.addEventListener('click', ()=>{
+      resetGame();
+      game.running = true; game.paused=false; game.lastTime = performance.now();
+      loop(game.lastTime);
+    });
+    pauseBtn.addEventListener('click', ()=>{
+      if(!game.running) return;
+      game.paused = !game.paused; pauseBtn.textContent = game.paused? 'استئناف' : 'إيقاف مؤقت';
+      if(!game.paused){ game.lastTime = performance.now(); loop(game.lastTime);}    });
+
+    function resetGame(){
+      game.score = 0; game.lives = 3; game.level = 1; game.speedMultiplier = 1; game.spawnInterval = 900; items.length = 0;
+      scoreEl.textContent = 'النتيجة: 0'; livesEl.textContent = 'حياة: 3'; pauseBtn.textContent = 'إيقاف مؤقت';
+      player.x = W/2 - player.w/2; player.y = H - 50; mouseX = null;
+    }
+
+    function spawnItem(){
+      const t = fruitTypes[Math.floor(Math.random()*fruitTypes.length)];
+      const x = Math.random()*(W - t.radius*2) + t.radius;
+      const speed = (1.2 + Math.random()*0.9 + game.level*0.15) * game.speedMultiplier;
+      items.push({x, y:-20, vy: speed, type: t});
+    }
+
+    function update(delta){
+      if(game.paused) return;
+      // تحديث مستوى السرعة كلما زادت النقاط
+      game.level = 1 + Math.floor(game.score / 100);
+      game.speedMultiplier = 1 + (game.level-1)*0.12;
+
+      // تحريك اللاعب
+      if(mouseX !== null){ // تتبع الفأرة
+        const targetX = mouseX - player.w/2;
+        player.x += (targetX - player.x) * 0.25;
+      } else {
+        if(keys['ArrowLeft']) player.x -= player.speed * 1.2;
+        if(keys['ArrowRight']) player.x += player.speed * 1.2;
+      }
+      // حجز داخل الشاشة
+      player.x = Math.max(6, Math.min(W - player.w - 6, player.x));
+
+      // إنشاء عناصر
+      game.spawnTimer += delta;
+      const effectiveInterval = Math.max(300, game.spawnInterval - game.level*40);
+      if(game.spawnTimer > effectiveInterval){ spawnItem(); game.spawnTimer = 0; }
+
+      // تحريك العناصر
+      for(let i=items.length-1;i>=0;i--){
+        const it = items[i];
+        it.vy += 0.02 * game.speedMultiplier; // جاذبية خفيفة
+        it.y += it.vy * (delta/16);
+
+        // اصطدام مع السلة؟ (مستطيل السلة مقابل دائرة الفاكهة)
+        const closestX = Math.max(player.x, Math.min(it.x, player.x + player.w));
+        const closestY = Math.max(player.y, Math.min(it.y, player.y + player.h));
+        const dx = it.x - closestX; const dy = it.y - closestY;
+        if(dx*dx + dy*dy <= it.type.radius*it.type.radius){
+          // امسكها
+          game.score += it.type.points;
+          scoreEl.textContent = 'النتيجة: ' + game.score;
+          items.splice(i,1);
+          continue;
+        }
+
+        // خرجت من الأسفل؟ يخسر حياة
+        if(it.y - it.type.radius > H){ items.splice(i,1); game.lives--; livesEl.textContent = 'حياة: ' + game.lives; if(game.lives<=0){ gameOver(); } }
+      }
+    }
+
+    function gameOver(){
+      game.running = false; game.paused = false; alert('انتهت اللعبة! نتيجتك: ' + game.score + '\nاضغط موافق لإعادة البدء.');
+      resetGame();
+    }
+
+    function draw(){
+      // خلفية
+      ctx.clearRect(0,0,W,H);
+      // تأثير ظل بسيط
+      const g = ctx.createLinearGradient(0,0,0,H);
+      g.addColorStop(0, '#0a243f'); g.addColorStop(1, '#031226');
+      ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+
+      // رسم العناصر
+      for(const it of items){
+        ctx.beginPath();
+        ctx.arc(it.x, it.y, it.type.radius, 0, Math.PI*2);
+        ctx.fillStyle = it.type.color; ctx.fill();
+        // تفاصيل بسيطة
+        ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1; ctx.stroke();
+      }
+
+      // رسم السلة (مستطيل مع قوس)
+      const p = player;
+      ctx.fillStyle = p.color;
+      roundRect(ctx, p.x, p.y, p.w, p.h, 8);
+      ctx.fill();
+      // عرض مستوى
+      ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.font = '14px sans-serif';
+      ctx.fillText('المستوى: ' + game.level, 12, 22);
+
+      // نص حالة إذا كانت متوقفة
+      if(!game.running){ drawCenteredText('اضغط "ابدأ" للعب', 28); }
+      if(game.paused){ drawCenteredText('متوقفة مؤقتًا', 28); }
+    }
+
+    function drawCenteredText(txt, size){
+      ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.font = size + 'px sans-serif';
+      const w = ctx.measureText(txt).width;
+      ctx.fillText(txt, (W-w)/2, H/2);
+    }
+
+    function roundRect(ctx,x,y,w,h,r){
+      ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+    }
+
+    // حلقة اللعبة
+    function loop(timestamp){
+      if(!game.running) { draw(); return; }
+      const delta = Math.min(40, timestamp - (game.lastTime||timestamp));
+      game.lastTime = timestamp;
+      if(!game.paused) update(delta);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    // ابدأ تلقائياً بتحميل الصفحة (اختياري)
+    // resetGame();
+
+    // ملاحظات: لو تريد أصوات أو صور للفواكه أضف عناصر <audio> أو متجهات صور وحملها قبل التشغيل.
+  </script>
+</body>
+</html>
